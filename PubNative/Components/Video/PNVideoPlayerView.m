@@ -34,22 +34,38 @@
 @property (nonatomic, assign)   BOOL                                    wasStatusBarHidden;
 @property (nonatomic, strong)   NSMutableArray                          *trackingEvents;
 
-- (void)skipAdd:(id)sender;
-
 @end
 
 @implementation PNVideoPlayerView
 
 #pragma mark - NSObject
 
+- (id)initWithFrame:(CGRect)frame
+              model:(PNVastModel*)model
+           delegate:(id<PNVideoPlayerViewDelegate>)delegate
+{
+    self = [super initWithNibName:NSStringFromClass([PNVideoPlayerView class]) bundle:nil];
+    
+    if (self) {
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(close)
+                                                     name:UIApplicationWillResignActiveNotification
+                                                   object:NULL];
+        
+        self.trackingEvents = [[NSMutableArray alloc] init];
+        self.wasStatusBarHidden = [UIApplication sharedApplication].statusBarHidden;
+        self.delegate = delegate;
+        self.model = model;
+        self.skipTime = [model.video_skip_time intValue];
+        self.frame = frame;
+    }
+    
+    return self;
+}
+
 - (void)dealloc
 {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
-    
-    [self.videoContainer removeFromSuperview];
-    self.videoContainer = nil;
-    
-    [self close];
     
     self.videoPlayer = nil;
     
@@ -57,12 +73,6 @@
     
     [self.loadLabel removeFromSuperview];
     self.loadLabel = nil;
-    
-    [self.skipView removeFromSuperview];
-    self.skipView = nil;
-    
-    [self.skipButton removeFromSuperview];
-    self.skipButton = nil;
     
     [self.cacher cancelCaching];
     self.cacher = nil;
@@ -78,6 +88,31 @@
 - (BOOL)prefersStatusBarHidden
 {
     return YES;
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    
+    self.view.backgroundColor = [UIColor blackColor];
+    self.view.frame = self.frame;
+    
+    self.loadLabel = [[PNProgressLabel alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
+    [self.loadLabel setBorderWidth: 6.0];
+    [self.loadLabel setColorTable: @{
+                                     NSStringFromProgressLabelColorTableKey(ProgressLabelTrackColor):[UIColor clearColor],
+                                     NSStringFromProgressLabelColorTableKey(ProgressLabelProgressColor):[UIColor whiteColor],
+                                     NSStringFromProgressLabelColorTableKey(ProgressLabelFillColor):[UIColor clearColor]
+                                     }];
+    [self.loadLabel setTextColor:[UIColor whiteColor]];
+    [self.loadLabel setShadowColor:[UIColor darkGrayColor]];
+    self.loadLabel.shadowOffset = CGSizeMake(1, 1);
+    [self.loadLabel setTextAlignment:NSTextAlignmentCenter];
+    [self.loadLabel setFont:[UIFont fontWithName:@"Helvetica" size:12]];
+    [self.loadContainer addSubview:self.loadLabel];
+    
+    [self.skipButton setTitle:self.model.skip_video_button forState:UIControlStateNormal];
+    [self.skipButton setContentHorizontalAlignment:UIControlContentHorizontalAlignmentRight];
 }
 
 - (void)viewWillAppear:(BOOL)animated
@@ -101,25 +136,54 @@
     }
 }
 
-- (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)toInterfaceOrientation
-{
-    return (toInterfaceOrientation == UIInterfaceOrientationLandscapeLeft);
-}
-- (BOOL)shouldAutorotate
-{
-    return NO;
-}
-- (NSUInteger)supportedInterfaceOrientations
-{
-    return UIInterfaceOrientationLandscapeLeft;
-}
-- (UIInterfaceOrientation)preferredInterfaceOrientationForPresentation
-{
-    return UIInterfaceOrientationLandscapeLeft;
-}
-
 #pragma mark - PNVideoPlayerView
 #pragma mark public
+
+- (void)displayCloseButton
+{
+    self.isMaximized = YES;
+    
+    [self.closeButton setHidden:NO];
+    [self.closeButton setEnabled:YES];
+    
+    [self.learnMoreButton setHidden:YES];
+    [self.learnMoreButton setEnabled:NO];
+    
+    [self.fullScreenButton setHidden:YES];
+    [self.fullScreenButton setEnabled:NO];
+}
+
+- (void)hideCloseButton
+{
+    self.isMaximized = NO;
+    
+    [self.closeButton setHidden:YES];
+    [self.closeButton setEnabled:NO];
+    
+    [self.fullScreenButton setHidden:YES];
+    [self.fullScreenButton setEnabled:NO];
+    
+    [self.learnMoreButton setHidden:NO];
+    [self.learnMoreButton setEnabled:YES];
+}
+
+- (void)displayFullscreenButton
+{
+    [self.learnMoreButton setHidden:YES];
+    [self.learnMoreButton setEnabled:NO];
+    
+    [self.fullScreenButton setHidden:NO];
+    [self.fullScreenButton setEnabled:YES];
+}
+
+- (void)hideFullscreenButton
+{
+    [self.learnMoreButton setHidden:NO];
+    [self.learnMoreButton setEnabled:YES];
+    
+    [self.fullScreenButton setHidden:YES];
+    [self.fullScreenButton setEnabled:NO];
+}
 
 - (void)prepareAd:(VastContainer*)ad
 {
@@ -133,93 +197,126 @@
 
 - (void)close
 {
-    [self.view removeFromSuperview];
-
-    if(self.delegate && [self.delegate respondsToSelector:@selector(videoCompleted)])
+    if([self isModal])
     {
-        [self.delegate videoCompleted];
+        [self dismissViewControllerAnimated:NO completion:^{
+            if(self.delegate && [self.delegate respondsToSelector:@selector(videoCompleted)])
+            {
+                [self.delegate videoCompleted];
+                self.delegate = nil;
+            }
+        }];
+    }
+    else
+    {
+        if (self.isMaximized)
+        {
+            [self hideCloseButton];
+            
+            [self willMoveToParentViewController:nil];
+            [self.view removeFromSuperview];
+            [self removeFromParentViewController];
+            
+            if (self.isCompleted)
+            {
+                if(self.delegate && [self.delegate respondsToSelector:@selector(videoCompleted)])
+                {
+                    [self.delegate videoCompleted];
+                    self.delegate = nil;
+                }
+            }
+            else
+            {
+                if (self.delegate && [self.delegate respondsToSelector:@selector(videoDismissedFullscreen)])
+                {
+                    [self.delegate videoDismissedFullscreen];
+                }
+            }
+            
+            return;
+        }
+        
+        if(self.delegate && [self.delegate respondsToSelector:@selector(videoCompleted)])
+        {
+            [self.delegate videoCompleted];
+            self.delegate = nil;
+        }
+        
+        [self willMoveToParentViewController:nil];
+        [self.view removeFromSuperview];
+        [self removeFromParentViewController];
+        
     }
     
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [self.videoPlayer close];
     self.videoPlayer = nil;
-    self.delegate = nil;
 }
 
-- (id)initWithFrame:(CGRect)frame
-              model:(PNVastModel*)model
-           delegate:(id<PNVideoPlayerViewDelegate>)delegate
+- (BOOL)isModal
 {
-    self = [super init];
+    if([self presentingViewController])
+        return YES;
+    if([[self presentingViewController] presentedViewController] == self)
+        return YES;
+    if([[[self tabBarController] presentingViewController] isKindOfClass:[UITabBarController class]])
+        return YES;
     
-    if (self) {
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                 selector:@selector(close)
-                                                     name:UIApplicationWillResignActiveNotification
-                                                   object:NULL];
-        
-        self.trackingEvents = [[NSMutableArray alloc] init];
-        self.wasStatusBarHidden = [UIApplication sharedApplication].statusBarHidden;
-        self.delegate = delegate;
-        self.skipTime = [model.video_skip_time intValue];
-        self.view.backgroundColor = [UIColor blackColor];
-        self.frame = frame;
-        self.view.frame = self.frame;
-        
-        self.videoContainer = [[UIView alloc] initWithFrame:frame];
-        [self.view addSubview:self.videoContainer];
-        
-        UIView *gestureView = [[UIView alloc] initWithFrame:frame];
-        UITapGestureRecognizer *tapRecognizer = [[UITapGestureRecognizer alloc] initWithTarget:self
-                                                                                        action:@selector(handleGesture:)];
-        [self.view addSubview:gestureView];
-        [gestureView addGestureRecognizer:tapRecognizer];
-        
-        self.loadLabel = [[PNProgressLabel alloc] initWithFrame:CGRectMake(10, self.view.frame.size.height - 40, 30, 30)];
-        [self.loadLabel setBorderWidth: 6.0];
-        [self.loadLabel setColorTable: @{
-                                         NSStringFromProgressLabelColorTableKey(ProgressLabelTrackColor):[UIColor clearColor],
-                                         NSStringFromProgressLabelColorTableKey(ProgressLabelProgressColor):[UIColor whiteColor],
-                                         NSStringFromProgressLabelColorTableKey(ProgressLabelFillColor):[UIColor clearColor]
-                                         }];
-        [self.loadLabel setTextColor:[UIColor whiteColor]];
-        [self.loadLabel setShadowColor:[UIColor darkGrayColor]];
-        self.loadLabel.shadowOffset = CGSizeMake(1, 1);
-        [self.loadLabel setTextAlignment:NSTextAlignmentCenter];
-        [self.loadLabel setFont:[UIFont fontWithName:@"Helvetica" size:12]];
-        [self.view addSubview:self.loadLabel];
-        [self.view bringSubviewToFront:self.loadLabel];
-        
-        self.skipView = [[UIView alloc] initWithFrame:CGRectMake(self.view.frame.size.width - 170,
-                                                                 self.view.frame.size.height - 40,
-                                                                 160,
-                                                                 30)];
-        
-        self.skipButton = [UIButton buttonWithType:UIButtonTypeCustom];
-        [self.skipButton addTarget:self
-                            action:@selector(skipAdd:)
-                  forControlEvents:UIControlEventTouchDown];
-        [self.skipButton setTitle:model.skip_video_button forState:UIControlStateNormal];
-        [self.skipButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-        [self.skipButton setTitleShadowColor:[UIColor darkGrayColor] forState:UIControlStateNormal];
-        self.skipButton.titleLabel.shadowOffset = CGSizeMake(1, 1);
-        self.skipButton.frame = CGRectMake(0,
-                                           0,
-                                           160,
-                                           30);
-        [self.skipButton setContentHorizontalAlignment:UIControlContentHorizontalAlignmentRight];
-        [self.skipButton.titleLabel setFont:[UIFont fontWithName:@"Helvetica" size:16]];
-    }
-    
-    return self;
+    return NO;
 }
 
-#pragma mark private
 
-- (void)skipAdd:(id)sender
+
+#pragma mark - IBAction Methods
+
+- (IBAction)skipAd:(id)sender
 {
     [self close];
 }
+
+- (IBAction)muteAd:(id)sender;
+{
+    [self.videoPlayer mute];
+    
+    if (!self.videoPlayer.silenced)
+    {
+        [self.muteButton setSelected:NO];
+    }
+    else
+    {
+        [self.muteButton setSelected:YES];
+    }
+}
+
+- (IBAction)learnMoreAd:(id)sender;
+{
+    [self tapGesture:nil];
+}
+
+- (IBAction)closeAd:(id)sender
+{
+    [self close];
+}
+
+- (IBAction)fullscreenAd:(id)sender
+{
+    [self.view removeFromSuperview];
+    UIViewController *presentingController = [UIApplication sharedApplication].keyWindow.rootViewController;
+    if(presentingController.presentedViewController)
+    {
+        presentingController = presentingController.presentedViewController;
+    }
+    
+    CGRect newFrame = presentingController.view.frame;
+    self.view.frame = newFrame;
+    self.videoPlayer.layer.frame = newFrame;
+    [self displayCloseButton];
+    [presentingController.view addSubview:self.view];
+}
+
+
+
+#pragma mark - Private Methods
 
 - (void)ad:(VastContainer*)ad autoStart:(BOOL)autoStart
 {
@@ -231,7 +328,7 @@
     [self.cacher startCaching];
 }
 
-- (void)handleGesture:(UIGestureRecognizer*)sender
+- (void)tapGesture:(UIGestureRecognizer*)sender
 {
     [self.trackingEvents addObject:@"clickThrough"];
     if ((NSNull*)self.vastAd.clickThrough != [NSNull null])
@@ -240,17 +337,18 @@
     }
     if(self.delegate)
     {
-        
         [self.delegate videoClicked:self.vastAd.mediaFile];
     }
 }
 
 #pragma mark - DELEGATES -
+
 #pragma mark PNVideoCacherDelegate
 
 - (void)videoCacherDidCache:(NSString *)videoFile
 {
     self.videoPlayer = [[PNVideoPlayer alloc] initWithDelegate:self];
+    
     [self.videoPlayer open:videoFile autoplay:self.autoStart];
     if(self.delegate)
     {
@@ -268,12 +366,17 @@
 
 #pragma mark PNVideoPlayerDelegate
 
-- (void)videoViewAvailable:(UIView*)videoView
+- (void)videoViewAvailable:(AVPlayerLayer*)videolayer
 {
-    if (videoView)
+    if (videolayer)
     {
-        videoView.frame = [self.videoContainer bounds];
-        [self.videoContainer addSubview:videoView];
+        for(CALayer *layer in self.videoContainer.layer.sublayers)
+        {
+            [layer removeFromSuperlayer];
+        }
+        
+        videolayer.frame = [self.view bounds];
+        [self.videoContainer.layer addSublayer:videolayer];
     }
 }
 
@@ -302,21 +405,12 @@
 
 - (void)playbackCompleted
 {
+    self.isCompleted = YES;
+    [self close];
     [self.trackingEvents addObject:@"trackingComplete"];
     if ((NSNull*)self.vastAd.trackingComplete != [NSNull null])
     {
         [PNTrackingManager trackURLString:self.vastAd.trackingComplete completion:nil];
-    }
-    
-    [self.loadLabel removeFromSuperview];
-    self.loadLabel = nil;
-    [self.skipView removeFromSuperview];
-    self.skipView = nil;
-    [self.videoPlayer stop];
-    
-    if(self.delegate)
-    {
-        [self.delegate videoCompleted];
     }
 }
 
@@ -361,9 +455,7 @@
         
         if (currentTime >= self.skipTime)
         {
-            [self.skipView addSubview:self.skipButton];
-            [self.view addSubview:self.skipView];
-            [self.view bringSubviewToFront:self.skipView];
+            [self.skipView setHidden:NO];
         }
         
         self.loadLabel.text = [NSString stringWithFormat:@"%.f", duration - currentTime];

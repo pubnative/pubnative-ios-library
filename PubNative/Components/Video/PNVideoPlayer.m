@@ -46,6 +46,15 @@
 {
     [self cleanup];
     
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(moviePlayBackDidFinish:)
+                                                 name:AVPlayerItemDidPlayToEndTimeNotification
+                                               object:self.avPlayer];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(moviePlayBackDidStarted:)
+                                                 name:@"PlaybackStartedNotification"
+                                               object:nil];
+    
     NSURL *url = nil;
     
 	if ([urlString hasPrefix:@"/"])
@@ -57,32 +66,27 @@
         url= [NSURL URLWithString:urlString];
     }
     
-    self.player = [[MPMoviePlayerController alloc] initWithContentURL:url];
-    [self.player setControlStyle:MPMovieControlStyleNone];
-    [self.player setScalingMode:MPMovieScalingModeAspectFit];
-    [self.player setFullscreen:YES animated:YES];
-    [self.player setShouldAutoplay:autoplay];
-    [self.player setMovieSourceType:MPMovieSourceTypeFile];
+    [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryAmbient error:nil];
+    
+    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:url options:nil];
+    AVPlayerItem *playerItem = [AVPlayerItem playerItemWithAsset:asset];
+    AVPlayer *avPlayer = [AVPlayer playerWithPlayerItem:playerItem];
+    self.avPlayer = avPlayer;
+    
+    __weak typeof(self) weakSelf = self;
+    [self.avPlayer addPeriodicTimeObserverForInterval:CMTimeMakeWithSeconds(1.0 / 60.0, NSEC_PER_SEC)
+                                                queue:nil
+                                           usingBlock:^(CMTime time) {
+                                               [weakSelf onProgressTimer];
+                                           }];
+    
+    self.layer = [AVPlayerLayer playerLayerWithPlayer:self.avPlayer];
+    self.avPlayer.actionAtItemEnd = AVPlayerActionAtItemEndNone;
     
     if ([self.delegate respondsToSelector:@selector(videoViewAvailable:)])
     {
-        [self.delegate videoViewAvailable:self.player.view];
+        [self.delegate videoViewAvailable:self.layer];
     }
-    
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(moviePlayBackDidStarted:)
-                                                 name:MPMoviePlayerPlaybackStateDidChangeNotification
-                                               object:nil];
-	[[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(moviePlayBackDidFinish:)
-                                                 name:MPMoviePlayerPlaybackDidFinishNotification
-                                               object:nil];
-	[[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(moviePlaybackPrepared:)
-                                                 name:MPMediaPlaybackIsPreparedToPlayDidChangeNotification
-                                               object:nil];
-    
-    [self.player prepareToPlay];
     
     if ([self.delegate respondsToSelector:@selector(playbackPreparing)])
     {
@@ -95,134 +99,83 @@
     self.delegate = nil;
     [self stop];
     [self cleanup];
-    
 }
 
 - (void)cleanup
 {
-    if ([self.progressTimer isValid])
-    {
-        [self.progressTimer invalidate];
-        self.progressTimer = nil;
-    }
-    
-    [self.player.view removeFromSuperview];
+    [self.layer removeFromSuperlayer];
 	[[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (void)play
 {
-    [self.player play];
+    [self.avPlayer play];
 }
 
 - (void)stop
 {
-    [self.player stop];
+    [self.avPlayer pause];
 }
 
 - (void)pause
 {
-    [self.player pause];
+    [self.avPlayer pause];
 }
 
-- (void)seekTo:(NSInteger)posInSeconds
+- (void)mute
 {
-    if (posInSeconds >= 0 &&
-        posInSeconds <= self.player.duration)
+    if (![self silenced])
     {
-        self.player.currentPlaybackTime = posInSeconds;
+        self.avPlayer.volume = 0.0f;
+        self.silenced = YES;
+    }
+    else
+    {
+        self.avPlayer.volume = 1.0f;
+        self.silenced = NO;
     }
 }
 
 - (NSInteger)duration
 {
-    return self.player.duration;
+    AVPlayerItem *currentItem = self.avPlayer.currentItem;
+    NSInteger i = (long)CMTimeGetSeconds([currentItem duration]);
+    return i;
 }
 
 - (NSInteger)currentPosition
 {
-    NSInteger ret = 0;
-    
-    if (self.player.loadState & MPMovieLoadStatePlayable)
-    {
-        ret = self.player.currentPlaybackTime;
-    }
-    
-	return ret;
+    AVPlayerItem *currentItem = self.avPlayer.currentItem;
+    NSInteger i = (long)CMTimeGetSeconds([currentItem currentTime]);
+    return i;
 }
 
 
 
 #pragma mark - Movie Player Notifications
 
-- (void)moviePlaybackPrepared:(NSNotification*)notification
-{
-    dispatch_async(dispatch_get_main_queue(), ^{
-        
-        if (self.progressTimer.isValid)
-        {
-            [self.progressTimer invalidate];
-            self.progressTimer = nil;
-        }
-        
-        self.progressTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
-                                                              target:self
-                                                            selector:@selector(onProgressTimer)
-                                                            userInfo:nil
-                                                             repeats:YES];
-    });
-}
-
 - (void)moviePlayBackDidStarted:(NSNotification*)notification
 {
-    if (self.player.playbackState == MPMoviePlaybackStatePlaying)
+    if ([self.delegate respondsToSelector:@selector(playbackStartedWithDuration:)])
     {
-        if ([self.delegate respondsToSelector:@selector(playbackStartedWithDuration:)])
-        {
-            [self.delegate playbackStartedWithDuration:self.player.playableDuration];
-        }
+        [self.delegate playbackStartedWithDuration:[self duration]];
     }
 }
 
 - (void)moviePlayBackDidFinish:(NSNotification*)notification
 {
-    NSDictionary *userInfo = [notification userInfo];
-    
-    dispatch_async(dispatch_get_main_queue(), ^{
-        
-        NSNumber *reason = [userInfo objectForKey:MPMoviePlayerPlaybackDidFinishReasonUserInfoKey];
-        
-        switch (reason.integerValue)
-        {
-            case MPMovieFinishReasonPlaybackEnded:
-                if ([self.delegate respondsToSelector:@selector(playbackCompleted)])
-                {
-                    [self.delegate playbackCompleted];
-                }
-                break;
-            case MPMovieFinishReasonPlaybackError:
-                if ([self.delegate respondsToSelector:@selector(playbackError:)])
-                {
-                    [self.delegate playbackError:0];
-                }
-                break;
-            default:
-                break;
-        }
-        
-        [self cleanup];
-    });
+    if ([self.delegate respondsToSelector:@selector(playbackCompleted)])
+    {
+        [self.delegate playbackCompleted];
+    }
 }
 
 - (void)onProgressTimer
 {
-    if ([self.player isPreparedToPlay])
+    if ([self.delegate respondsToSelector:@selector(playbackProgress:duration:)])
     {
-        if ([self.delegate respondsToSelector:@selector(playbackProgress:duration:)])
-        {
-            [self.delegate playbackProgress:self.player.currentPlaybackTime
-                                   duration:self.player.duration];
-        }
+        [self.delegate playbackProgress:[self currentPosition]
+                               duration:[self duration]];
     }
 }
 
