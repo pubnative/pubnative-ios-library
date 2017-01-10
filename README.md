@@ -29,7 +29,6 @@ pubnative-ios-library is a collection of Open Source tools to implement API base
 <a name="install"></a>
 ## Install
 
-* Download the latest PubNativeLibrary.framework
 * Drag and drop the framework into the "Embeded Binaries" section of your desired target.
 
 **WatchKit support**
